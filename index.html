@@ -65,8 +65,16 @@ main .badge{max-width:100%;white-space:normal;overflow-wrap:anywhere}
 #eoaDataTable input[type=checkbox]{width:22px;height:22px;min-height:0;accent-color:#d97706}
 .select2-results__options{overscroll-behavior:contain;touch-action:pan-y;-webkit-overflow-scrolling:touch}
 dialog{max-height:90dvh;overscroll-behavior:contain;-webkit-overflow-scrolling:touch}
-.eogm-modal-dropdown{position:fixed!important;z-index:10001}
-.eogm-modal-dropdown .select2-dropdown{position:relative;left:0;top:0}
+.mobile-select-dialog{position:fixed;left:0;right:0;bottom:auto;margin:0 auto;width:min(540px,calc(100% - 24px));max-height:85vh;max-height:85dvh;padding:16px;overflow:hidden;box-sizing:border-box}
+.mobile-select-dialog[open]{display:flex;flex-direction:column;gap:12px}
+.mobile-select-header{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-shrink:0}
+.mobile-select-header h2{font-weight:700;font-size:18px;overflow-wrap:anywhere}
+.mobile-select-dialog input{font-size:16px;flex-shrink:0}
+.mobile-select-options{overflow-y:auto;min-height:0;max-height:52vh;max-height:52dvh;overscroll-behavior:contain;touch-action:pan-y;-webkit-overflow-scrolling:touch;display:flex;flex-direction:column;gap:8px}
+.mobile-select-option{display:flex;justify-content:space-between;align-items:center;gap:12px;text-align:left;flex-shrink:0;min-height:52px;padding:13px 14px;border:1px solid #475569;border-radius:10px;background:#0f172a;color:#f8fafc;font-size:16px;white-space:normal;overflow-wrap:anywhere}
+.mobile-select-option[aria-pressed=true]{border-color:#d97706;background:#78350f}
+.mobile-select-option:disabled{opacity:.45}
+.mobile-select-option:focus-visible{outline:2px solid #fbbf24;outline-offset:-3px}
 @media(max-width:640px){.dt-container .dt-layout-row{display:flex;flex-direction:column;align-items:stretch}.dt-container .dt-layout-cell{text-align:left!important}.dt-container .dt-paging{display:flex;flex-wrap:wrap}.dt-container .dt-length label{white-space:normal}}
 </style>
 </head>
@@ -189,36 +197,64 @@ const SOURCE_REVISION = '2026-10-10-affectations-officielles';
 let cloudClient=null;
 
 // Synchronisation Select2 / Alpine, y compris dans les <dialog class="p-2"> natifs.
+// Sur téléphone, un sélecteur dédié évite le clipping et les conflits de la couche
+// native des dialogs. Select2 reste utilisé sur ordinateur et pour l'affichage.
+function openMobileSelect(el){
+ if(el.disabled)return;
+ let picker=document.getElementById('mobileSelectDialog');
+ if(!picker){
+  picker=document.createElement('dialog');picker.id='mobileSelectDialog';picker.className='mobile-select-dialog';picker.setAttribute('aria-labelledby','mobileSelectTitle');picker.setAttribute('x-ignore','');
+  picker.innerHTML='<div class="mobile-select-header"><h2 id="mobileSelectTitle"></h2><button type="button" class="btn" data-picker-close aria-label="Fermer les options">Fermer</button></div><label for="mobileSelectSearch" class="sr-only">Rechercher une option</label><input id="mobileSelectSearch" type="search" placeholder="Rechercher une option…" autocomplete="off"><div class="mobile-select-options" role="group" aria-labelledby="mobileSelectTitle"></div><p class="muted" data-picker-empty hidden>Aucune option ne correspond.</p>';
+  document.body.appendChild(picker);
+ }
+ picker._layoutCleanup?.();if(picker.open)picker.close();
+ const title=picker.querySelector('h2'),search=picker.querySelector('input'),list=picker.querySelector('.mobile-select-options'),empty=picker.querySelector('[data-picker-empty]');
+ title.textContent=el.labels?.[0]?.textContent.trim().slice(0,100)||el.getAttribute('aria-label')||'Choisir une valeur';search.value='';
+ const normalize=t=>String(t).normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase();
+ const render=()=>{
+  list.replaceChildren();const terms=normalize(search.value).trim().split(/\s+/).filter(Boolean);let count=0;
+  for(const option of el.options){
+   if(option.hidden||!terms.every(t=>normalize(option.textContent).includes(t)))continue;
+   const button=document.createElement('button');button.type='button';button.className='mobile-select-option';button.disabled=option.disabled||option.parentElement.disabled===true;
+   const selected=option.selected;button.setAttribute('aria-pressed',String(selected));
+   const label=document.createElement('span');label.textContent=option.textContent||'Aucune valeur';button.appendChild(label);
+   if(selected){const mark=document.createElement('span');mark.textContent='✓';mark.setAttribute('aria-hidden','true');button.appendChild(mark);}
+   button.addEventListener('click',()=>{
+    if(el.disabled||!el.isConnected||!el.contains(option)||option.disabled||option.parentElement.disabled===true)return;
+    el.value=option.value;
+    // Un événement DOM unique actualise Alpine, Select2 et le sélecteur DataTables.
+    el.dispatchEvent(new Event('change',{bubbles:true}));picker.close();
+   });list.appendChild(button);count++;
+  }
+  empty.hidden=count>0;
+ };
+ search.oninput=render;picker.querySelector('[data-picker-close]').onclick=()=>picker.close();
+ const viewport=window.visualViewport;
+ const layout=()=>{if(!picker.open)return;picker.style.maxHeight=Math.max(120,(viewport?.height||window.innerHeight)-24)+'px';picker.style.top=((viewport?.offsetTop||0)+12)+'px';};
+ viewport?.addEventListener('resize',layout);viewport?.addEventListener('scroll',layout);window.addEventListener('resize',layout);
+ picker._layoutCleanup=()=>{viewport?.removeEventListener('resize',layout);viewport?.removeEventListener('scroll',layout);window.removeEventListener('resize',layout);};
+ picker.onclose=()=>{if(picker.open)return;picker._layoutCleanup();search.oninput=null;if(el.isConnected){const selection=jQuery(el).next('.select2-container').find('.select2-selection')[0];selection?.focus({preventScroll:true});}list.replaceChildren();};
+ render();picker.showModal();layout();search.focus({preventScroll:true});
+}
 document.addEventListener('alpine:init',()=>{
+ jQuery(document).on('select2:opening.eogmMobile','select',function(event){
+  if(window.matchMedia('(max-width: 767px), (pointer: coarse)').matches){event.preventDefault();openMobileSelect(this);}
+ });
  Alpine.directive('select2',(el,{},{effect,evaluate,cleanup})=>{
-  let ready=false;const modal=el.closest('dialog');let instance;
+  let ready=false;const modal=el.closest('dialog');
   const sync=()=>{if(!ready)return;const value=evaluate(el.getAttribute('x-model'));jQuery(el).val(value==null?'':value).trigger('change.select2');};
-  const place=()=>{
-   if(!modal||!instance?.isOpen())return;
-   const rect=instance.$container[0].getBoundingClientRect(),bounds=modal.getBoundingClientRect();
-   const viewport=window.visualViewport,top=Math.max(bounds.top+8,viewport?.offsetTop||0),bottom=Math.min(bounds.bottom-8,(viewport?.offsetTop||0)+(viewport?.height||window.innerHeight));
-   const below=bottom-rect.bottom,above=rect.top-top,up=below<150&&above>below,room=Math.max(60,Math.min(260,up?above:below));
-   const box=instance.dropdown.$dropdownContainer;box.addClass('eogm-modal-dropdown').css({left:rect.left,width:rect.width,top:up?Math.max(top,rect.top-room):rect.bottom});
-   instance.results.$results.css({maxHeight:Math.max(44,room-52),overflowY:'auto'});
-   instance.dropdown.$dropdown.css({width:rect.width});
-  };
-  const close=()=>{if(ready&&instance?.isOpen())jQuery(el).select2('close')};
+  const close=()=>{if(ready)jQuery(el).select2('close')};
   Alpine.nextTick(()=>{
    if(!jQuery.fn.select2)return;
    jQuery(el).select2({width:'100%',minimumResultsForSearch:0,dropdownParent:jQuery(modal||document.body),language:{noResults:()=> 'Aucun résultat',searching:()=> 'Recherche…'}});
-   ready=true;instance=jQuery(el).data('select2');
-   if(modal){instance.dropdown._positionDropdown=place;instance.dropdown._resizeDropdown=place;modal.addEventListener('scroll',close);modal.addEventListener('close',close);window.addEventListener('resize',close);window.visualViewport?.addEventListener('resize',close);}
-   jQuery(el).on('select2:open.eogm',()=>{
-    sync();if(modal){/* Select2 ne doit pas verrouiller le défilement de la fenêtre native. */
-     instance.$container.parents().off('scroll.select2.'+instance.id);requestAnimationFrame(place);
-    }
-   });
+   ready=true;
+   modal?.addEventListener('close',close);
    jQuery(el).on('select2:select.eogm select2:unselect.eogm',()=>el.dispatchEvent(new Event('change',{bubbles:true})));
    sync();
   });
   effect(()=>{evaluate(el.getAttribute('x-model'));Alpine.nextTick(sync)});
   const observer=new MutationObserver(()=>Alpine.nextTick(sync));observer.observe(el,{childList:true,subtree:true,characterData:true});
-  cleanup(()=>{observer.disconnect();modal?.removeEventListener('scroll',close);modal?.removeEventListener('close',close);window.removeEventListener('resize',close);window.visualViewport?.removeEventListener('resize',close);if(ready)jQuery(el).off('.eogm').select2('destroy')});
+  cleanup(()=>{observer.disconnect();modal?.removeEventListener('close',close);if(ready)jQuery(el).off('.eogm').select2('destroy')});
  });
  Alpine.directive('eoa-table',(root,{},{effect,evaluate,cleanup})=>{
   const table=root.querySelector('table'),error=root.querySelector('[data-table-error]');let dt=null,role=null,updating=false,pending=null,scheduled=false,lastFilter='';
