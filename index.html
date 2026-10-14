@@ -76,6 +76,12 @@ dialog{max-height:90dvh;overscroll-behavior:contain;-webkit-overflow-scrolling:t
 .mobile-select-option:disabled{opacity:.45}
 .mobile-select-option:focus-visible{outline:2px solid #fbbf24;outline-offset:-3px}
 @media(max-width:640px){.dt-container .dt-layout-row{display:flex;flex-direction:column;align-items:stretch}.dt-container .dt-layout-cell{text-align:left!important}.dt-container .dt-paging{display:flex;flex-wrap:wrap}.dt-container .dt-length label{white-space:normal}}
+
+/* Ancrage local : le menu suit le champ lorsque le dialog défile. */
+.eogm-select-host{position:relative;min-width:0;width:100%}
+.select2-container--default .select2-results>.select2-results__options{max-height:240px;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin;scrollbar-color:#d97706 #0f172a}
+.select2-results__options::-webkit-scrollbar{width:10px}
+.select2-results__options::-webkit-scrollbar-thumb{background:#d97706;border:2px solid #0f172a;border-radius:10px}
 </style>
 </head>
 <body x-data="eogmApp()" x-init="boot()" @keydown.escape.window="toast='';document.getElementById('mobileMenu').close()">
@@ -240,13 +246,28 @@ document.addEventListener('alpine:init',()=>{
  jQuery(document).on('select2:opening.eogmMobile','select',function(event){
   if(window.matchMedia('(max-width: 767px), (pointer: coarse)').matches){event.preventDefault();openMobileSelect(this);}
  });
+ jQuery(document).on('select2:open.eogmDesktop','select',function(){
+  const instance=jQuery(this).data('select2'),modal=this.closest('dialog');if(!instance)return;
+  // Select2 verrouille normalement ses ancêtres scrollables. Dans un dialog,
+  // cela empêche d'atteindre les résultats situés sous le bord de la fenêtre.
+  instance.$container.parents().off('scroll.select2.'+instance.id);
+  if(!modal)return;
+  requestAnimationFrame(()=>{
+   if(!instance.isOpen()||!modal.open)return;
+   const results=instance.results.$results[0];results.style.maxHeight=Math.max(72,Math.min(240,modal.clientHeight-110))+'px';results.style.overflowY='auto';
+   const menu=instance.dropdown.$dropdown[0].getBoundingClientRect(),bounds=modal.getBoundingClientRect();
+   if(menu.bottom>bounds.bottom-16)modal.scrollTop+=menu.bottom-bounds.bottom+16;
+   else if(menu.top<bounds.top+16)modal.scrollTop-=bounds.top+16-menu.top;
+  });
+ });
  Alpine.directive('select2',(el,{},{effect,evaluate,cleanup})=>{
-  let ready=false;const modal=el.closest('dialog');
+  let ready=false;const modal=el.closest('dialog');let host=null;
   const sync=()=>{if(!ready)return;const value=evaluate(el.getAttribute('x-model'));jQuery(el).val(value==null?'':value).trigger('change.select2');};
   const close=()=>{if(ready)jQuery(el).select2('close')};
   Alpine.nextTick(()=>{
    if(!jQuery.fn.select2)return;
-   jQuery(el).select2({width:'100%',minimumResultsForSearch:0,dropdownParent:jQuery(modal||document.body),language:{noResults:()=> 'Aucun résultat',searching:()=> 'Recherche…'}});
+   if(modal){host=document.createElement('div');host.className='eogm-select-host';el.before(host);host.appendChild(el);}
+   jQuery(el).select2({width:'100%',minimumResultsForSearch:0,dropdownParent:jQuery(host||document.body),language:{noResults:()=> 'Aucun résultat',searching:()=> 'Recherche…'}});
    ready=true;
    modal?.addEventListener('close',close);
    jQuery(el).on('select2:select.eogm select2:unselect.eogm',()=>el.dispatchEvent(new Event('change',{bubbles:true})));
@@ -300,7 +321,7 @@ document.addEventListener('alpine:init',()=>{
 function eogmApp(){return {
  paperScope:'all',paperMode:'blank',paperMotif:'',paperError:'',registry:null,numberPreview:null,registryAction:'',registryReason:'',registryError:'',eoaSort:{key:'nom',dir:1},spaBrigade:'1',correction:null,correctionSearch:'',correctionError:'',cForm:{},auditRows:[],callSearch:{1:'',2:'',3:''},callMarks:{},activeCall:'',logo:EOGM_LOGO,logged:false,blocked:false,busy:false,working:false,tab:'dashboard',mode:'local',credentials:{user:'',password:''},profile:{role:'encadrement',brigade:null,display_name:'Vérification locale'},loginError:'',storageError:'',rawBackup:'',toast:'',toastTimer:null,page:1,pageSize:15,historyBrigade:'',selectedRecord:null,pendingDelete:null,statusLabel:'',statusError:'',formError:'',form:{},filters:{q:'',corps:'',sexe:'',brigade:''},draft:{date:'',time:'07:00',motifId:'m1',absences:{}},absForm:{},absError:'',motifLabel:'',motifError:'',cloudConfig:{...CLOUD_DEFAULTS},configError:'',overview:null,syncTimer:null,lastSynced:'',selectedIDs:[],bulkBrigade:'1',bulkError:'',accounts:[],accountForm:{email:'',name:'',role:'brigade',brigade:'1',active:'true'},accountError:'',shareFile:null,sharePreview:'',shareError:'',loadPending:false,
  tabs:[{id:'dashboard',name:'Tableau de bord',icon:'fa-solid fa-chart-pie'},{id:'eoa',name:'Gestion des EOA',icon:'fa-solid fa-users'},{id:'spa',name:'Suivi des SPA',icon:'fa-solid fa-clipboard-check'}],
- brigades:[{id:1,name:'1ère Brigade'},{id:2,name:'2ème Brigade'},{id:3,name:'3ème Brigade'}],corps:{GM:'Génie Militaire',SM:'Santé Militaire',MN:'Marine Nationale',AT:'Armée de Terre'},db:{version:2,eoa:[],statuses:[],motifs:[],spa:[]},
+ brigades:[{id:1,name:'1ère Brigade'},{id:2,name:'2ème Brigade'},{id:3,name:'3ème Brigade'}],corps:{GM:'Génie Militaire',SM:'Sapeurs-Pompiers',MN:'Marine Nationale',AT:'Armée de Terre'},db:{version:2,eoa:[],statuses:[],motifs:[],spa:[]},
  seed(){return {version:2,sourceRevision:SOURCE_REVISION,eoa:OFFICIAL_ROWS?OFFICIAL_ROWS.split('\n').map((l,i)=>{const[nom,prenom,corps,sexe,brigade]=l.split('|');return{id:'source-'+(i+1),sourceNo:i+1,nom,prenom,corps,sexe,brigade:brigade?Number(brigade):null}}):[],statuses:[{id:'present',label:'Présents'},{id:'absent',label:'Absents'},{id:'sick',label:'Malade / Infirmerie'},{id:'leave',label:'Permissionnaire'}],motifs:[{id:'m1',label:'Appel du matin'},{id:'m2',label:'Appel du soir'},{id:'m3',label:'Prise d’arme'},{id:'m4',label:'Instruction'},{id:'m5',label:'Contrôle des effectifs'}],spa:[]}},
  boot(){
   this.db=this.seed();this.mode=ONLINE_ONLY?'cloud':'local';
